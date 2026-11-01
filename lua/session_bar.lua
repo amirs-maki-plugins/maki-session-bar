@@ -141,11 +141,25 @@ local function running_tasks(sid)
   return running_count(tasks[sid])
 end
 
+-- The same braille spinner the status bar runs, one frame per repaint
+-- while a task works, stopped as soon as none does.
+local SPINNER_FRAMES = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
+local SPINNER_MS = 120
+local spin = { frame = 1, timer = nil }
+local spin_start -- forward declaration; render_bar re-arms it
+
+local function spin_stop()
+  if spin.timer then
+    spin.timer:stop()
+    spin.timer = nil
+  end
+end
+
 local function bar_label(title)
   local label = "[" .. short_title(title, MAX_CELLS) .. "]"
   local running = running_tasks(cur_id)
   if running > 0 then
-    label = label .. " " .. running .. " running"
+    label = label .. " " .. SPINNER_FRAMES[spin.frame] .. " " .. running
   end
   return label
 end
@@ -257,6 +271,11 @@ local function paint_line(label, nbg, nfg, cols)
 end
 
 local function render_bar()
+  if running_tasks(cur_id) > 0 then
+    spin_start()
+  else
+    spin_stop()
+  end
   local e = cur_id and cache[cur_id]
   local title = e and e.title
   local cwd = e and e.cwd
@@ -319,6 +338,19 @@ local function render_bar()
     maki.log.error(PLUGIN .. ": open_win failed: " .. tostring(win))
     bar_win = nil
     bar_buf = nil
+  end
+end
+
+-- One frame per tick while a task runs; render_bar re-arms the timer, so
+-- the animation dies with the last running task and never outlives the
+-- bar it was started for.
+spin_start = function()
+  if spin.timer == nil then
+    spin.timer = maki.defer_fn(function()
+      spin.timer = nil
+      spin.frame = spin.frame % #SPINNER_FRAMES + 1
+      guard(render_bar, "spin")
+    end, SPINNER_MS)
   end
 end
 

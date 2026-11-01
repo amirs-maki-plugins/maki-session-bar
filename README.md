@@ -17,6 +17,8 @@ per-session color that paints the name block and the border together.
 - The color is remembered per session id in
   `~/.local/state/maki/session_colors.json`, so a session restored after a
   restart comes back with the color it left with.
+- While subagents or background tasks of the session run, a spinner and
+  their count follow the title: `[my refactoring] ⠋ 2`.
 - The terminal window title follows the session name and cwd.
 
 ## Install
