@@ -97,4 +97,12 @@ cases.sanitize_colors_drops_bad_entries = function(check)
   check.eq(t.sanitize_colors("junk")["abc"], nil, "a non-table decodes to nothing")
 end
 
+cases.running_count_counts_only_working_tasks = function(check)
+  check.eq(t.running_count(nil), 0)
+  check.eq(t.running_count({}), 0)
+  check.eq(t.running_count({ a = "working" }), 1)
+  check.eq(t.running_count({ a = "working", b = "working", c = "idle" }), 2)
+  check.eq(t.running_count({ a = "done", b = "error", c = "cancelled" }), 0)
+end
+
 return { cases = cases, name = "session_bar" }

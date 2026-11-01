@@ -123,6 +123,33 @@ local cache = {}
 -- event for the focused tab (a reset or a load swaps the id in place).
 local cur_id
 
+-- session id -> { [task id] = status }. A subagent counts as running while
+-- its status is "working"; a plugin task between prompts is "idle".
+local tasks = {}
+
+local function running_count(task_statuses)
+  local n = 0
+  for _, status in pairs(task_statuses or {}) do
+    if status == "working" then
+      n = n + 1
+    end
+  end
+  return n
+end
+
+local function running_tasks(sid)
+  return running_count(tasks[sid])
+end
+
+local function bar_label(title)
+  local label = "[" .. short_title(title, MAX_CELLS) .. "]"
+  local running = running_tasks(cur_id)
+  if running > 0 then
+    label = label .. " " .. running .. " running"
+  end
+  return label
+end
+
 local function entry(sid)
   if not sid then
     return nil
@@ -252,7 +279,7 @@ local function render_bar()
     return
   end
 
-  local label = "[" .. short_title(title, MAX_CELLS) .. "]"
+  local label = bar_label(title)
   local nbg = name_bg()
 
   -- One persistent window: resizes and title changes rewrite its buffer
@@ -315,6 +342,15 @@ local function seed(sid)
     if snap.cwd and snap.cwd ~= "" then
       e.cwd = snap.cwd
     end
+    -- A reload inside a turn replays no task event, so seed the live tasks.
+    local list = maki.task.list()
+    local t = {}
+    for _, row in ipairs(list or {}) do
+      if row.id and row.status then
+        t[row.id] = row.status
+      end
+    end
+    tasks[sid] = t
   elseif err and err ~= "no interactive UI attached" then
     maki.log.error(PLUGIN .. ": session read: " .. tostring(err))
   end
@@ -353,6 +389,45 @@ maki.api.create_autocmd({
   end,
 })
 
+-- Tasks a subagent starts or finishes, and the stop that can come in the
+-- same frame. The badge counts them, so a changed task repaints the bar.
+maki.api.create_autocmd("TaskStatusChanged", {
+  callback = function(ev)
+    local d = ev.data or {}
+    if not d.session_id or not d.id then
+      return
+    end
+    local t = tasks[d.session_id] or {}
+    tasks[d.session_id] = t
+    if d.status == "done" or d.status == "error" or d.status == "cancelled" then
+      t[d.id] = nil
+    else
+      t[d.id] = d.status
+    end
+    if d.session_id == cur_id then
+      guard(render_bar, "task render")
+    end
+  end,
+})
+
+maki.api.create_autocmd("TaskStopped", {
+  callback = function(ev)
+    local d = ev.data or {}
+    if d.session_id and d.id and tasks[d.session_id] then
+      tasks[d.session_id][d.id] = nil
+      if d.session_id == cur_id then
+        guard(render_bar, "task render")
+      end
+    end
+  end,
+})
+
+maki.api.create_autocmd({ "SessionReset", "SessionEnd" }, {
+  callback = function(ev)
+    tasks[(ev.data or {}).session_id or ""] = nil
+  end,
+})
+
 -- A terminal resize changes the dash count, so the bar must re-render.
 -- A terminal resize changes the dash count. The float manager sends the
 -- bar window a resize event whenever its content area changes; this
@@ -374,7 +449,7 @@ watch_resizes = function(win)
         if title and title ~= "" and title ~= "New session" then
           -- ev.width is the window's content width, borderless here, so it
           -- is the terminal width the dashes must fill
-          local label = "[" .. short_title(title, MAX_CELLS) .. "]"
+          local label = bar_label(title)
           local nbg = name_bg()
           guard(function()
             paint_line(label, nbg, readable_fg(nbg), ev.width)
@@ -618,5 +693,6 @@ return {
     valid_color = canonical_color,
     valid_saved_color = valid_saved_color,
     sanitize_colors = sanitize_colors,
+    running_count = running_count,
   },
 }
