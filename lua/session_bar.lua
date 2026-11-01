@@ -269,7 +269,7 @@ local function render_bar()
   bar_buf = buf
   paint_line(label, nbg, readable_fg(nbg), size.cols)
 
-  local ok, win = pcall(maki.ui.open_win, buf, {
+  local wopts = {
     anchor = "SW",
     row = -1, -- the prompt box's bottom border line
     col = 0,
@@ -278,7 +278,13 @@ local function render_bar()
     border = "none",
     focus = false,
     zindex = 40,
-  })
+  }
+  if cur_id then
+    -- A window belongs to one session and closes when its tab loses focus,
+    -- so the bar must name the session it currently paints for.
+    wopts.session = cur_id
+  end
+  local ok, win = pcall(maki.ui.open_win, buf, wopts)
   if ok then
     bar_win = win
     watch_resizes(win)
