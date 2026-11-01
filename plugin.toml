@@ -1,4 +1,4 @@
-min_maki_version = "0.6.5"
+min_maki_version = "0.7.0"
 
 [permissions]
 # maki.session.read seeds the title and cwd of a session first seen this run.

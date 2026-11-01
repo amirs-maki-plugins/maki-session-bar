@@ -32,13 +32,11 @@ maki.pack.add({
 
 ## Requirements
 
-- maki 0.6.5 or newer (`SessionCwdChanged`).
+- maki 0.7.0 or newer (`SessionCwdChanged`, session-scoped windows).
 - The `/color` picker and the theme-matched name color read the running
   theme through `maki.ui.get_theme_color` and `maki.ui.get_theme_palette`.
-  Those exist in the `feat/theme-color` branch of
-  [amirfr3/maki](https://github.com/amirfr3/maki) and are proposed upstream
-  in its pull request. On a build without them the bar still works, with
-  the theme's own border color and the built-in swatch list.
+  On a build without them the bar still works, with the theme's own border
+  color and the built-in swatch list.
 
 ## Specs
 
