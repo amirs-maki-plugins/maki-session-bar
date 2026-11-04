@@ -6,6 +6,9 @@
 --                              a picker (swatch names only). "default" or
 --                              "reset" restores the theme's own colors.
 --
+-- The bar draws its name block only: the host draws the border line the
+-- block sits on, so the line keeps the theme's own color and mode tint.
+--
 -- The name is truncated to 30 display cells. The color is per-session:
 -- /color applies it live through maki.ui.set_theme_style and records it
 -- in ~/.local/state/maki/session_colors.json, so a session restored
@@ -36,6 +39,12 @@ local REOPEN_DELAY_MS = 100
 local opts = {
   name_color = nil, -- nil = the theme's own border color
 }
+
+-- Whether this session's agent is working, seeded from the session read and
+-- kept current by SessionStatusChanged. Only "working" fades the rule.
+local working = {}
+-- How far the rule fades toward the background while the agent works.
+local DIM_FACTOR = 0.4
 -- The color is remembered per session id in session_colors.json: /color
 -- writes it, and the focus handler re-applies it when the session comes
 -- back (a restart, a tab switch). A session without a saved entry runs
@@ -106,9 +115,10 @@ end
 local bar_win
 local bar_buf
 local last_win_title
-local apply_border_color -- forward declaration; defined in the colors section
+local apply_border_style -- forward declaration; defined in the colors section
+local rule_style -- forward declaration; defined in the colors section
 local apply_session_color -- forward declaration; defined in the colors section
-local watch_resizes -- forward declaration; defined in the events section
+local watch_close -- forward declaration; defined in the events section
 
 -- What the bar knows about each session: { title, cwd } keyed by session
 -- id, filled by autocmd payloads. Rendering reads only this cache.
@@ -245,23 +255,38 @@ local function win_title(title, cwd)
   return "maki"
 end
 
--- (Re)writes the bar's single line into the persistent buffer. cols comes
--- from the terminal size, or from a resize event after the host moved the
--- window.
-local function paint_line(label, nbg, nfg, cols)
-  local label_w = maki.ui.display_width(label)
-  -- The window covers the input box's own bottom border line, so the dashes
-  -- are redrawn here, in the same color as the name block. One blank cell
-  -- separates the dashes from the label; the label itself ends flush at
-  -- the window's right edge.
-  local dashes = math.max(cols - label_w - 1, 1)
+-- (Re)writes the bar's single line into the persistent buffer: the name
+-- block, the running-task badge when there is one, and one blank cell.
+-- The window is no wider than that, so the host draws the rest of the
+-- border line underneath it.
+local function paint_line(label, nbg, nfg)
   if not bar_buf then
     return
   end
   bar_buf:set_lines({
-    { { string.rep("-", dashes), { fg = nbg } }, { " ", {} },
-      { label, { fg = nfg, bg = nbg, bold = true } } },
+    { { label, { fg = nfg, bg = nbg, bold = true } }, { " ", {} } },
   })
+end
+
+-- One blank cell after the block, so the theme's line does not run into it.
+local function label_width(label)
+  return maki.ui.display_width(label) + 1
+end
+
+-- The window follows the label: a badge appearing, a count reaching two
+-- digits, a longer name. A spinner frame is one cell, so it never patches.
+local bar_width
+local function fit_width(win, label)
+  local width = label_width(label)
+  if width == bar_width then
+    return
+  end
+  bar_width = width
+  if win then
+    pcall(function()
+      win:set_config({ width = width })
+    end)
+  end
 end
 
 local function render_bar()
@@ -273,9 +298,7 @@ local function render_bar()
   local e = cur_id and cache[cur_id]
   local title = e and e.title
   local cwd = e and e.cwd
-  -- No saved color paints nothing: the border keeps the theme's own, which
-  -- follows the mode. The name block still needs a color of its own.
-  apply_border_color(opts.name_color)
+  apply_border_style(rule_style())
   local show_bar = e and title and title ~= "" and title ~= "New session"
 
   -- terminal window title follows the session name and cwd; untruncated,
@@ -301,21 +324,20 @@ local function render_bar()
   -- with set_lines instead of tearing the window down, so the bar never
   -- flickers against the input box it sits on.
   if bar_win and bar_win.is_open and bar_win:is_open() and bar_buf then
-    local size = maki.ui.terminal_size()
-    paint_line(label, nbg, readable_fg(nbg), size.cols)
+    paint_line(label, nbg, readable_fg(nbg))
+    fit_width(bar_win, label)
     return
   end
 
-  local size = maki.ui.terminal_size()
   local buf = maki.ui.buf({ scratch = true })
   bar_buf = buf
-  paint_line(label, nbg, readable_fg(nbg), size.cols)
+  paint_line(label, nbg, readable_fg(nbg))
 
   local wopts = {
     anchor = "SW",
     row = -1, -- the prompt box's bottom border line
     col = 0,
-    width = "100%",
+    width = label_width(label),
     height = 1,
     border = "none",
     focus = false,
@@ -329,11 +351,13 @@ local function render_bar()
   local ok, win = pcall(maki.ui.open_win, buf, wopts)
   if ok then
     bar_win = win
-    watch_resizes(win)
+    bar_width = label_width(label)
+    watch_close(win)
   else
     maki.log.error(PLUGIN .. ": open_win failed: " .. tostring(win))
     bar_win = nil
     bar_buf = nil
+    bar_width = nil
   end
 end
 
@@ -364,6 +388,7 @@ local function seed(sid)
   local snap, err = maki.session.read({ session = sid })
   if snap then
     e.seeded = true
+    working[sid] = snap.status == "working"
     if snap.title and snap.title ~= "" then
       e.title = snap.title
     end
@@ -452,15 +477,28 @@ maki.api.create_autocmd("TaskStopped", {
 
 maki.api.create_autocmd({ "SessionReset", "SessionEnd" }, {
   callback = function(ev)
-    tasks[(ev.data or {}).session_id or ""] = nil
+    local sid = (ev.data or {}).session_id or ""
+    tasks[sid] = nil
+    working[sid] = nil
   end,
 })
 
--- The float manager sends the bar window a resize event whenever its
--- content area changes; this listener repaints the persistent buffer at
--- the new width. The window itself is never torn down, so nothing
--- flickers.
---
+-- A turn starts or ends. Only the rule changes: it fades toward the
+-- background while the agent in front works, the way the host dims its own
+-- chrome, and comes back to the session's color when the turn ends.
+maki.api.create_autocmd("SessionStatusChanged", {
+  callback = function(ev)
+    local d = ev.data or {}
+    if not d.session_id then
+      return
+    end
+    working[d.session_id] = d.status == "working"
+    if d.session_id == cur_id then
+      apply_border_style(rule_style())
+    end
+  end,
+})
+
 -- A close from the host is not the end of the bar. The host closes
 -- session windows on its own (a reset, a reload, a tab juggle, a
 -- sleep/wake cycle), and no title, cwd or focus autocmd follows some of
@@ -469,7 +507,7 @@ maki.api.create_autocmd({ "SessionReset", "SessionEnd" }, {
 -- and its title still warrants a bar; a session that lost its tab stays
 -- closed, because its focus event re-opens the bar when it returns.
 local reopens, last_reopen = 0, 0
-watch_resizes = function(win)
+watch_close = function(win)
   if not win then
     return
   end
@@ -493,20 +531,6 @@ watch_resizes = function(win)
           end, REOPEN_DELAY_MS)
         end
         return
-      end
-      if ev.type == "resize" then
-        reopens = 0
-        local e = cur_id and cache[cur_id]
-        local title = e and e.title
-        if title and title ~= "" and title ~= "New session" then
-          -- ev.width is the window's content width, borderless here, so it
-          -- is the terminal width the dashes must fill
-          local label = bar_label(title)
-          local nbg = name_bg()
-          guard(function()
-            paint_line(label, nbg, readable_fg(nbg), ev.width)
-          end, "resize repaint")
-        end
       end
     end
   end)
@@ -590,34 +614,81 @@ apply_session_color = function(sid)
     return
   end
   opts.name_color = c
-  apply_border_color(c)
+  apply_border_style(rule_style())
 end
 
 -- ------------------------------------------------------------- theme io ----
--- The input box border color lives in the maki theme, outside the plugin.
--- /color keeps the user theme in sync with the name color: same
--- hex, so the dashes and the [name] block always match.
+-- The rule's color lives in the maki theme, outside the plugin. /color keeps
+-- the two in step: the same hex paints the rule and the [name] block, and
+-- the rule fades toward the background while the agent works.
 
--- A paint of the same colour is not repeated: the host rebuilds the whole
+local function rgb(hex)
+  if type(hex) ~= "string" then
+    return nil
+  end
+  local r, g, b = hex:match("^#(%x%x)(%x%x)(%x%x)$")
+  if not r then
+    return nil
+  end
+  return tonumber(r, 16), tonumber(g, 16), tonumber(b, 16)
+end
+
+local function lerp(from, to, t)
+  return math.floor(from + (to - from) * t + 0.5)
+end
+
+-- A hex color blends cell by cell toward the background, which is the same
+-- fade the host applies to its own chrome. A palette or ANSI color has no
+-- RGB here, so it falls back to the terminal's dim attribute.
+local function fade(hex)
+  local r, g, b = rgb(hex)
+  local br, bg, bb = rgb(maki.ui.theme_color and maki.ui.theme_color("background"))
+  if not r or not br then
+    return { fg = hex, dim = true }
+  end
+  return {
+    fg = string.format(
+      "#%02x%02x%02x",
+      lerp(r, br, DIM_FACTOR),
+      lerp(g, bg, DIM_FACTOR),
+      lerp(b, bb, DIM_FACTOR)
+    ),
+  }
+end
+
+-- What the rule should be: the session's color, faded while the agent
+-- works, and nothing at all when the session has no color, so the theme's
+-- own rule and its busy style apply.
+rule_style = function()
+  local color = opts.name_color
+  if not color or color == "default" then
+    return nil
+  end
+  if working[cur_id] then
+    return fade(color)
+  end
+  return { fg = color }
+end
+
+-- A paint of the same style is not repeated: the host rebuilds the whole
 -- theme for one call, and the bar renders on every tick.
 local last_painted
-apply_border_color = function(color)
+apply_border_style = function(style)
   if not CAN_PAINT then
     return
   end
-  local want = color
-  if want == "default" then
-    want = nil
+  local key = {}
+  if style then
+    key[#key + 1] = tostring(style.fg)
+    key[#key + 1] = style.dim and "dim" or ""
   end
-  if want == last_painted then
+  key = table.concat(key, "|")
+  if key == last_painted then
     return
   end
-  last_painted = want
-  local style = nil
-  if want then
-    style = { fg = want }
-  end
-  -- one key paints the whole rule: the dashes and the input box border
+  last_painted = key
+  -- one key paints the whole rule: the transcript separator and the input
+  -- box border
   maki.ui.set_theme_style("separator", style)
 end
 
@@ -641,8 +712,8 @@ local function set_color(value)
     maki.ui.flash("'" .. tostring(value) .. "' is not a color. Use a swatch name (see the picker) or 'default'.")
     return
   end
-  apply_border_color(c)
   opts.name_color = c
+  apply_border_style(rule_style())
   persist_color(cur_id, c)
   guard(render_bar, "render")
 end
@@ -674,7 +745,7 @@ local function pick_color()
     if choice.item.value == nil then
       -- "default (theme)": same as reset
       opts.name_color = nil
-      apply_border_color(nil)
+      apply_border_style(rule_style())
       persist_color(cur_id, nil)
       guard(render_bar, "render")
       return
@@ -700,7 +771,7 @@ if CAN_PAINT then
 
       if cmd == "reset" then
         opts.name_color = nil
-        apply_border_color(nil)
+        apply_border_style(rule_style())
         persist_color(cur_id, nil)
         guard(render_bar, "render")
         return
@@ -744,5 +815,7 @@ return {
     valid_saved_color = valid_saved_color,
     sanitize_colors = sanitize_colors,
     running_count = running_count,
+    fade = fade,
+    label_width = label_width,
   },
 }

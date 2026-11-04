@@ -16,6 +16,23 @@ cases.readable_fg_luminance = function(check)
   check.eq(t.readable_fg("blue"), "default", "a non-hex name defers to the theme")
 end
 
+cases.fade_keeps_a_hex_a_hex = function(check)
+  local faded = t.fade("#ff0000")
+  check.eq(faded.fg:match("^#%x%x%x%x%x%x$") ~= nil, true, "still a hex color")
+end
+
+cases.fade_of_a_name_asks_the_terminal_to_dim = function(check)
+  -- A palette or ANSI name has no RGB to blend, whatever the theme's
+  -- background is, so the fallback is deterministic.
+  local faded = t.fade("blue")
+  check.eq(faded.fg, "blue", "the name stays as it is")
+  check.eq(faded.dim, true, "a name has no RGB to blend")
+end
+
+cases.label_width_counts_a_trailing_cell = function(check)
+  check.eq(t.label_width("[abc]"), 6, "5 cells plus the separating blank")
+end
+
 cases.short_title_truncates_with_ellipsis = function(check)
   check.eq(t.short_title("short", 15), "short")
   check.eq(t.short_title("exactly-15-chars!", 15), "exactly-15-cha…",
