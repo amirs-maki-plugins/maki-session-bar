@@ -44,7 +44,7 @@ local opts = {
 -- kept current by SessionStatusChanged. Only "working" fades the rule.
 local working = {}
 -- How far the rule fades toward the background while the agent works.
-local DIM_FACTOR = 0.55
+local DIM_FACTOR = 0.47
 -- The color is remembered per session id in session_colors.json: /color
 -- writes it, and the focus handler re-applies it when the session comes
 -- back (a restart, a tab switch). A session without a saved entry runs
