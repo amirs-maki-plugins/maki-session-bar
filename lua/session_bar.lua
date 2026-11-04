@@ -7,7 +7,7 @@
 --                              "reset" restores the theme's own colors.
 --
 -- The name is truncated to 30 display cells. The color is per-session:
--- /color applies it live through maki.ui.set_theme_color and records it
+-- /color applies it live through maki.ui.set_theme_style and records it
 -- in ~/.local/state/maki/session_colors.json, so a session restored
 -- after a restart comes back with the color it left with.
 --
@@ -23,7 +23,9 @@ local swatches = require("swatches")
 
 local PLUGIN = "session_bar"
 local MAX_CELLS = 30
-local BORDER_STYLES = { "mode_build", "mode_plan", "mode_bash" }
+-- A host without set_theme_style cannot repaint the border, so the bar
+-- offers no /color command there instead of one that does nothing.
+local CAN_PAINT = maki.ui.set_theme_style ~= nil
 -- A host-side close re-opens the window, but not forever: at most
 -- REOPEN_BUDGET re-opens per REOPEN_WINDOW_S, so a host that keeps
 -- closing the window cannot spin the plugin.
@@ -44,31 +46,17 @@ local opts = {
 local function name_bg()
   if opts.name_color then
     -- a palette name ("blue"), hex, or "default"; spans and
-    -- set_theme_color both resolve names against the running theme
+    -- set_theme_style both resolve names against the running theme
     return opts.name_color
   end
-  -- no saved color: the theme's own border color, so the name block
-  -- always matches the dashes the input box paints
-  local c = maki.ui.get_theme_color and maki.ui.get_theme_color("mode_build")
+  -- no saved color: the color the theme gives the input box at rest, so
+  -- the name block always matches the dashes the input box paints
+  local style = maki.ui.theme_style and maki.ui.theme_style("mode_build")
+  local c = style and style.fg
   if c and c ~= "default" then
     return c
   end
   return "#808080"
-end
-
--- The input box paints its border with `input_border` while the agent
--- works, so the name block and the box would split into two colors. Pin
--- that style to the name color: the box keeps one color for the whole turn.
-local last_busy_color
-local function pin_busy_color(color)
-  if not maki.ui.set_theme_color or color == last_busy_color then
-    return
-  end
-  last_busy_color = color
-  local ok, err = maki.ui.set_theme_color("input_border", color)
-  if not ok then
-    maki.log.error(PLUGIN .. ": pin busy color: " .. tostring(err))
-  end
 end
 
 local function readable_fg(bg)
@@ -118,7 +106,7 @@ end
 local bar_win
 local bar_buf
 local last_win_title
-local apply_border_colors -- forward declaration; defined in the colors section
+local apply_border_color -- forward declaration; defined in the colors section
 local apply_session_color -- forward declaration; defined in the colors section
 local watch_resizes -- forward declaration; defined in the events section
 
@@ -285,7 +273,7 @@ local function render_bar()
   local e = cur_id and cache[cur_id]
   local title = e and e.title
   local cwd = e and e.cwd
-  pin_busy_color(name_bg())
+  apply_border_color(name_bg())
   local show_bar = e and title and title ~= "" and title ~= "New session"
 
   -- terminal window title follows the session name and cwd; untruncated,
@@ -600,10 +588,7 @@ apply_session_color = function(sid)
     return
   end
   opts.name_color = c
-  local ok, err = apply_border_colors(c)
-  if not ok then
-    maki.log.error(PLUGIN .. ": apply saved color: " .. tostring(err))
-  end
+  apply_border_color(c)
 end
 
 -- ------------------------------------------------------------- theme io ----
@@ -611,23 +596,27 @@ end
 -- /color keeps the user theme in sync with the name color: same
 -- hex, so the dashes and the [name] block always match.
 
-apply_border_colors = function(color)
-  if not maki.ui.set_theme_color then
-    return true
+-- A paint of the same colour is not repeated: the host rebuilds the whole
+-- theme for one call, and the bar renders on every tick.
+local last_painted
+apply_border_color = function(color)
+  if not CAN_PAINT then
+    return
   end
-  for _, style in ipairs(BORDER_STYLES) do
-    local c = color
-    if c == "default" or c == nil then
-      c = nil -- restore the theme's own color
-    end
-    local ok, err = maki.ui.set_theme_color(style, c)
-    if not ok then
-      -- a rejected color must not half-apply: the first style that
-      -- refuses stops the loop and the error reaches the user
-      return false, err
-    end
+  local want = color
+  if want == "default" then
+    want = nil
   end
-  return true
+  if want == last_painted then
+    return
+  end
+  last_painted = want
+  local style = nil
+  if want then
+    style = { fg = want }
+  end
+  -- one key paints the whole rule: the dashes and the input box border
+  maki.ui.set_theme_style("separator", style)
 end
 
 local function canonical_color(value)
@@ -650,12 +639,7 @@ local function set_color(value)
     maki.ui.flash("'" .. tostring(value) .. "' is not a color. Use a swatch name (see the picker) or 'default'.")
     return
   end
-  local applied, err = apply_border_colors(c)
-  if not applied then
-    -- nothing changed: no saved color, no repaint, the error says why
-    maki.ui.flash(tostring(err))
-    return
-  end
+  apply_border_color(c)
   opts.name_color = c
   persist_color(cur_id, c)
   guard(render_bar, "render")
@@ -688,7 +672,7 @@ local function pick_color()
     if choice.item.value == nil then
       -- "default (theme)": same as reset
       opts.name_color = nil
-      apply_border_colors(nil)
+      apply_border_color(nil)
       persist_color(cur_id, nil)
       guard(render_bar, "render")
       return
@@ -697,36 +681,38 @@ local function pick_color()
   end
 end
 
-maki.api.register_command({
-  name = "/color",
-  description = "Set the session-name and border color: /color [name|default|reset]",
-  nargs = "*",
-  handler = function(copts)
-    local fargs = copts.fargs or {}
+if CAN_PAINT then
+  maki.api.register_command({
+    name = "/color",
+    description = "Set the session-name and border color: /color [name|default|reset]",
+    nargs = "*",
+    handler = function(copts)
+      local fargs = copts.fargs or {}
 
-    if #fargs == 0 then
-      pick_color()
-      return
-    end
+      if #fargs == 0 then
+        pick_color()
+        return
+      end
 
-    local cmd = fargs[1]
+      local cmd = fargs[1]
 
-    if cmd == "reset" then
-      opts.name_color = nil
-      apply_border_colors(nil)
-      persist_color(cur_id, nil)
-      guard(render_bar, "render")
-      return
-    end
+      if cmd == "reset" then
+        opts.name_color = nil
+        apply_border_color(nil)
+        persist_color(cur_id, nil)
+        guard(render_bar, "render")
+        return
+      end
 
-    if fargs[2] == nil then
-      set_color(cmd)
-      return
-    end
+      if fargs[2] == nil then
+        set_color(cmd)
+        return
+      end
 
-    maki.ui.flash("Usage: /color [name|default] | reset")
-  end,
-})
+      maki.ui.flash("Usage: /color [name|default] | reset")
+    end,
+  })
+end
 
 -- first paint once the UI has settled. A restored session emits no title
 -- event (the host seeds last_title from the loaded title), so if no focus
