@@ -24,6 +24,12 @@ local swatches = require("swatches")
 local PLUGIN = "session_bar"
 local MAX_CELLS = 30
 local BORDER_STYLES = { "mode_build", "mode_plan", "mode_bash" }
+-- A host-side close re-opens the window, but not forever: at most
+-- REOPEN_BUDGET re-opens per REOPEN_WINDOW_S, so a host that keeps
+-- closing the window cannot spin the plugin.
+local REOPEN_BUDGET = 3
+local REOPEN_WINDOW_S = 30
+local REOPEN_DELAY_MS = 100
 
 local opts = {
   name_color = nil, -- nil = the theme's own border color
@@ -460,11 +466,19 @@ maki.api.create_autocmd({ "SessionReset", "SessionEnd" }, {
   end,
 })
 
--- A terminal resize changes the dash count, so the bar must re-render.
--- A terminal resize changes the dash count. The float manager sends the
--- bar window a resize event whenever its content area changes; this
--- listener repaints the persistent buffer at the new width. The window
--- itself is never torn down, so nothing flickers.
+-- The float manager sends the bar window a resize event whenever its
+-- content area changes; this listener repaints the persistent buffer at
+-- the new width. The window itself is never torn down, so nothing
+-- flickers.
+--
+-- A close from the host is not the end of the bar. The host closes
+-- session windows on its own (a reset, a reload, a tab juggle, a
+-- sleep/wake cycle), and no title, cwd or focus autocmd follows some of
+-- those, so a bar that only re-rendered on events would stay gone. A
+-- close therefore re-opens the window when the session is still focused
+-- and its title still warrants a bar; a session that lost its tab stays
+-- closed, because its focus event re-opens the bar when it returns.
+local reopens, last_reopen = 0, 0
 watch_resizes = function(win)
   if not win then
     return
@@ -473,9 +487,25 @@ watch_resizes = function(win)
     while bar_win == win do
       local ev = win:recv()
       if not ev or ev.type == "close" then
+        bar_win = nil
+        bar_buf = nil
+        local e = cur_id and cache[cur_id]
+        local wanted = e and e.title and e.title ~= "" and e.title ~= "New session"
+        local now = os.time()
+        if now - last_reopen > REOPEN_WINDOW_S then
+          reopens = 0
+        end
+        if wanted and reopens < REOPEN_BUDGET and maki.session.current() == cur_id then
+          reopens = reopens + 1
+          last_reopen = now
+          maki.defer_fn(function()
+            guard(render_bar, "reopen")
+          end, REOPEN_DELAY_MS)
+        end
         return
       end
       if ev.type == "resize" then
+        reopens = 0
         local e = cur_id and cache[cur_id]
         local title = e and e.title
         if title and title ~= "" and title ~= "New session" then
