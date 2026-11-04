@@ -59,7 +59,7 @@ local function name_bg()
     return opts.name_color
   end
   -- no saved color: the color the theme gives the input box at rest, so
-  -- the name block always matches the dashes the input box paints
+  -- the name block always matches the rule the input box paints
   local style = maki.ui.theme_style and maki.ui.theme_style("mode_build")
   local c = style and style.fg
   if c and c ~= "default" then
