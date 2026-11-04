@@ -273,7 +273,9 @@ local function render_bar()
   local e = cur_id and cache[cur_id]
   local title = e and e.title
   local cwd = e and e.cwd
-  apply_border_color(name_bg())
+  -- No saved color paints nothing: the border keeps the theme's own, which
+  -- follows the mode. The name block still needs a color of its own.
+  apply_border_color(opts.name_color)
   local show_bar = e and title and title ~= "" and title ~= "New session"
 
   -- terminal window title follows the session name and cwd; untruncated,
