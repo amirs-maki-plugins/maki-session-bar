@@ -44,7 +44,7 @@ local opts = {
 -- kept current by SessionStatusChanged. Only "working" fades the rule.
 local working = {}
 -- How far the rule fades toward the background while the agent works.
-local DIM_FACTOR = 0.4
+local DIM_FACTOR = 0.55
 -- The color is remembered per session id in session_colors.json: /color
 -- writes it, and the focus handler re-applies it when the session comes
 -- back (a restart, a tab switch). A session without a saved entry runs
@@ -255,8 +255,8 @@ local function win_title(title, cwd)
   return "maki"
 end
 
--- (Re)writes the bar's single line into the persistent buffer: the name
--- block, the running-task badge when there is one, and one blank cell.
+-- (Re)writes the bar's single line into the persistent buffer: one blank
+-- cell, then the name block with the running-task badge when there is one.
 -- The window is no wider than that, so the host draws the rest of the
 -- border line underneath it.
 local function paint_line(label, nbg, nfg)
@@ -264,11 +264,11 @@ local function paint_line(label, nbg, nfg)
     return
   end
   bar_buf:set_lines({
-    { { label, { fg = nfg, bg = nbg, bold = true } }, { " ", {} } },
+    { { " ", {} }, { label, { fg = nfg, bg = nbg, bold = true } } },
   })
 end
 
--- One blank cell after the block, so the theme's line does not run into it.
+-- One blank cell before the block, so the theme's line does not run into it.
 local function label_width(label)
   return maki.ui.display_width(label) + 1
 end
@@ -334,9 +334,9 @@ local function render_bar()
   paint_line(label, nbg, readable_fg(nbg))
 
   local wopts = {
-    anchor = "SW",
+    anchor = "SE",
     row = -1, -- the prompt box's bottom border line
-    col = 0,
+    col = 0, -- flush against the right edge of that line
     width = label_width(label),
     height = 1,
     border = "none",

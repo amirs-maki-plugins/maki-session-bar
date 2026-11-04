@@ -5,7 +5,7 @@ A session title bar for [maki](https://github.com/tontinton/maki): a
 per-session color that paints the name block and the border together.
 
 ```
-────────[ my refactoring ]──
+────────────────[ my refactoring ]
 ```
 
 The block is the whole window. The rule it sits on is the host's, so it
