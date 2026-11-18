@@ -736,10 +736,18 @@ local function pick_color()
       detail = { { "  " .. sw.label .. "  ", { bg = hex, fg = readable_fg(hex) } } },
     }
   end
+  -- The selected row wears the color it would apply, over the selection's own
+  -- background so the cursor stays visible.
+  local sel_bg = maki.ui.theme_style and (maki.ui.theme_style("item_selected") or {}).bg
   local choice = ListPicker.open(items, {
     title = "Session name + border color",
     footer = { { "<CR>", "select" }, { "<Esc>", "cancel" } },
     cursor = 1,
+    style = function(item)
+      if item.hex then
+        return { fg = item.hex, bg = sel_bg }
+      end
+    end,
   })
   if choice and choice.type == "choice" and choice.item then
     if choice.item.value == nil then
