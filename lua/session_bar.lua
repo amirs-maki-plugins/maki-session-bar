@@ -21,7 +21,8 @@
 -- arrives as an event. The bar shows every real title, auto-generated ones
 -- included.
 
-local ListPicker = require("maki.list_picker")
+local ListNav = require("maki.list_nav")
+local TextInput = require("maki.text_input")
 local swatches = require("swatches")
 
 local PLUGIN = "session_bar"
@@ -35,6 +36,16 @@ local CAN_PAINT = maki.ui.set_theme_style ~= nil
 local REOPEN_BUDGET = 3
 local REOPEN_WINDOW_S = 30
 local REOPEN_DELAY_MS = 100
+
+local PICKER_TITLE = "Session name + border color"
+local PICKER_FOOTER = { { "<CR>", "select" }, { "<Esc>", "cancel" } }
+local PICKER_QUERY_PREFIX = "\xe2\x9d\xaf "
+local PICKER_INDENT = "  "
+local PICKER_RIGHT_PAD = 2
+local PICKER_MIN_GAP = 2
+-- The border's two rows; the query line and its spacer are counted apart.
+local PICKER_CHROME = 2
+local NO_MATCHES = "  (no matches)"
 
 local opts = {
   name_color = nil, -- nil = the theme's own border color
@@ -718,39 +729,133 @@ local function set_color(value)
   guard(render_bar, "render")
 end
 
+-- A name matches when every word of the query is in it, in any order.
+local function matches_all(label, query)
+  local hay = label:lower()
+  for word in query:lower():gmatch("%S+") do
+    if not hay:find(word, 1, true) then
+      return false
+    end
+  end
+  return true
+end
+
+local function filter_rows(rows, query)
+  local out = {}
+  for _, row in ipairs(rows) do
+    if matches_all(row.label, query) then
+      out[#out + 1] = row
+    end
+  end
+  return out
+end
+
+-- The selected row's label takes the color it would apply, so the picker
+-- shows the choice and not only its name. The chip on every row keeps a
+-- swatch readable before it is picked.
+local function color_row(row, selected, width, sel_bg)
+  local label = PICKER_INDENT .. row.label
+  local base = "item"
+  if selected then
+    base = row.hex and { fg = row.hex, bg = sel_bg } or "selected"
+  end
+  local spans = { { label, base } }
+  local used = maki.ui.display_width(label)
+  if row.hex then
+    local chip = "  " .. row.label .. "  "
+    local pad = width - used - maki.ui.display_width(chip) - PICKER_RIGHT_PAD
+    if pad >= PICKER_MIN_GAP then
+      spans[#spans + 1] = { string.rep(" ", pad), base }
+      spans[#spans + 1] = { chip, { bg = row.hex, fg = readable_fg(row.hex) } }
+      used = width - PICKER_RIGHT_PAD
+    end
+  end
+  if used < width then
+    spans[#spans + 1] = { string.rep(" ", width - used), base }
+  end
+  return spans
+end
+
+-- ListPicker paints every selected label with one theme style, and this
+-- picker wants the row to wear its own color, so it draws its own list.
+local function open_color_picker(rows)
+  local input = TextInput.new()
+  local sel_bg = maki.ui.theme_style and (maki.ui.theme_style("item_selected") or {}).bg
+  local shown, cursor = rows, 1
+  local buf = maki.ui.buf()
+  local win = maki.ui.open_win(buf, {
+    title = PICKER_TITLE,
+    footer = PICKER_FOOTER,
+    height = #rows + PICKER_CHROME + 2,
+    reserved_bottom = 1,
+  })
+  local width, height = win.width, win.height
+
+  local function draw()
+    local lines = {}
+    for _, line in ipairs(input:render(PICKER_QUERY_PREFIX).lines) do
+      lines[#lines + 1] = line
+    end
+    lines[#lines + 1] = {}
+    local first = #lines + 1
+    if #shown == 0 then
+      lines[first] = { { NO_MATCHES, "dim" } }
+    else
+      for i, row in ipairs(shown) do
+        lines[first + i - 1] = color_row(row, i == cursor, width, sel_bg)
+      end
+    end
+    win:set_config({ reserved_top = first - 1 })
+    buf:set_lines(lines)
+    if #shown > 0 then
+      win:set_cursor(first + cursor - 1)
+    end
+  end
+
+  while true do
+    draw()
+    local ev = win:recv()
+    if not ev or ev.type == "close" then
+      return nil
+    end
+    if ev.type == "resize" then
+      width, height = ev.width, ev.height
+    elseif ev.type == "key" then
+      local key = ev.key
+      if key == "<Esc>" or key == "<C-c>" then
+        win:close()
+        return nil
+      elseif key == "<CR>" then
+        if #shown > 0 then
+          win:close()
+          return shown[cursor]
+        end
+      elseif
+        not ListNav.handle_key(key, cursor, { count = #shown, page = math.max(height - PICKER_CHROME, 1) }, function(to)
+          cursor = to
+        end)
+      then
+        if input:handle_key(key) == TextInput.Result.CHANGED then
+          shown = filter_rows(rows, input:value())
+          cursor = 1
+        end
+      end
+    end
+  end
+end
+
 local function pick_color()
-  local items = {
-    {
-      label = "default (theme)",
-      value = nil,
-      detail = { { "  default (theme's own border color)  ", { fg = "default" } } },
-    },
+  local rows = {
+    { label = "default (theme)", value = nil },
   }
   for _, sw in ipairs(swatch_list()) do
-    local hex = sw.hex
-    items[#items + 1] = {
-      label = sw.label,
-      -- the hex is what gets applied; the names are only a label
-      -- here, so the color never depends on later resolution
-      value = hex,
-      detail = { { "  " .. sw.label .. "  ", { bg = hex, fg = readable_fg(hex) } } },
-    }
+    -- the hex is what gets applied; the names are only a label
+    -- here, so the color never depends on later resolution
+    rows[#rows + 1] = { label = sw.label, value = sw.hex, hex = sw.hex }
   end
-  -- The selected row wears the color it would apply, over the selection's own
-  -- background so the cursor stays visible.
-  local sel_bg = maki.ui.theme_style and (maki.ui.theme_style("item_selected") or {}).bg
-  local choice = ListPicker.open(items, {
-    title = "Session name + border color",
-    footer = { { "<CR>", "select" }, { "<Esc>", "cancel" } },
-    cursor = 1,
-    style = function(item)
-      if item.hex then
-        return { fg = item.hex, bg = sel_bg }
-      end
-    end,
-  })
-  if choice and choice.type == "choice" and choice.item then
-    if choice.item.value == nil then
+  local choice = open_color_picker(rows)
+  if choice then
+    if choice.value == nil then
       -- "default (theme)": same as reset
       opts.name_color = nil
       apply_border_style(rule_style())
@@ -758,7 +863,7 @@ local function pick_color()
       guard(render_bar, "render")
       return
     end
-    set_color(choice.item.value)
+    set_color(choice.value)
   end
 end
 
@@ -820,6 +925,9 @@ return {
     win_title = win_title,
     short_cwd = short_cwd,
     valid_color = canonical_color,
+    matches_all = matches_all,
+    filter_rows = filter_rows,
+    color_row = color_row,
     valid_saved_color = valid_saved_color,
     sanitize_colors = sanitize_colors,
     running_count = running_count,

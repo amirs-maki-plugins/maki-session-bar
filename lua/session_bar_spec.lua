@@ -114,6 +114,34 @@ cases.sanitize_colors_drops_bad_entries = function(check)
   check.eq(t.sanitize_colors("junk")["abc"], nil, "a non-table decodes to nothing")
 end
 
+cases.filter_rows_matches_every_word_in_any_order = function(check)
+  local rows = { { label = "default (theme)" }, { label = "violet/magenta" }, { label = "green" } }
+  check.eq(#t.filter_rows(rows, ""), 3, "an empty query keeps every row")
+  check.eq(#t.filter_rows(rows, "magenta violet"), 1, "words match in any order")
+  check.eq(t.filter_rows(rows, "violet")[1].label, "violet/magenta")
+  check.eq(#t.filter_rows(rows, "mauve"), 0, "a word no row has leaves nothing")
+  check.eq(#t.filter_rows(rows, "the"), 1, "a match inside the label counts")
+end
+
+cases.color_row_paints_the_selected_row_in_its_own_color = function(check)
+  local row = { label = "red", value = "#ff0000", hex = "#ff0000" }
+  local width = 30
+  local selected = t.color_row(row, true, width, "#202020")
+  check.eq(selected[1][2].fg, "#ff0000", "the label wears the swatch color")
+  check.eq(selected[1][2].bg, "#202020", "over the selection background")
+  local unselected = t.color_row(row, false, width, "#202020")
+  check.eq(unselected[1][2], "item", "an unselected label stays an ordinary row")
+
+  local w = 0
+  for _, span in ipairs(selected) do
+    w = w + maki.ui.display_width(span[1])
+  end
+  check.eq(w, width, "the row fills the window width")
+
+  local plain = t.color_row({ label = "default (theme)" }, true, width, "#202020")
+  check.eq(plain[1][2], "selected", "a row with no color keeps the selection style")
+end
+
 cases.running_count_counts_only_working_tasks = function(check)
   check.eq(t.running_count(nil), 0)
   check.eq(t.running_count({}), 0)
